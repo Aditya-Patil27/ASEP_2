@@ -2,62 +2,75 @@
 #include "sensors.h"
 #include "communication.h"
 
-// Pin Definitions
-const int MOTOR_LEFT_FWD = 5;
-const int MOTOR_LEFT_BWD = 6;
-const int MOTOR_RIGHT_FWD = 9;
-const int MOTOR_RIGHT_BWD = 10;
-const int MOTOR_ENABLE = 4;
-
-// Serial Communication
-const int BAUD_RATE = 9600;
+// Serial Communication configuration
+const unsigned long BAUD_RATE = 9600;
+unsigned long lastTelemetryTime = 0;
+const unsigned long TELEMETRY_INTERVAL_MS = 100; // 10 Hz telemetry loop
 
 void setup() {
-  // Initialize serial communication
   Serial.begin(BAUD_RATE);
-  
-  // Initialize motor pins
-  pinMode(MOTOR_LEFT_FWD, OUTPUT);
-  pinMode(MOTOR_LEFT_BWD, OUTPUT);
-  pinMode(MOTOR_RIGHT_FWD, OUTPUT);
-  pinMode(MOTOR_RIGHT_BWD, OUTPUT);
-  pinMode(MOTOR_ENABLE, OUTPUT);
-  
-  // Enable motors
-  digitalWrite(MOTOR_ENABLE, HIGH);
-  
-  // Initialize sensors
+  initializeMotors();
   initializeSensors();
+  stopCar();
+  Serial.println("SYSTEM_READY");
+}
+
+void processCommand(String command) {
+  command.trim();
+  if (command.length() == 0) return;
+
+  // Handle MOVE or CONTROL command
+  // Format: MOVE:<DIR>:<SPEED_0_255> or CONTROL:<DIR>:<SPEED_0.0_1.0>
+  if (command.startsWith("MOVE:") || command.startsWith("CONTROL:")) {
+    int firstColon = command.indexOf(':');
+    int secondColon = command.indexOf(':', firstColon + 1);
+
+    if (firstColon != -1 && secondColon != -1) {
+      String direction = command.substring(firstColon + 1, secondColon);
+      direction.toUpperCase();
+      String speedStr = command.substring(secondColon + 1);
+
+      int pwmSpeed = 0;
+      if (command.startsWith("CONTROL:")) {
+        // float 0.0 to 1.0 -> map to 0 to 255
+        float normSpeed = speedStr.toFloat();
+        pwmSpeed = (int)(constrain(normSpeed, 0.0f, 1.0f) * 255.0f);
+      } else {
+        // integer 0 to 255
+        pwmSpeed = speedStr.toInt();
+      }
+
+      moveCar(direction, pwmSpeed);
+      sendAck(direction);
+    }
+  } else if (command == "STOP" || command == "EMERGENCY_STOP") {
+    stopCar();
+    sendAck("STOP");
+  } else if (command == "SENSOR_REQUEST") {
+    SensorData sensorData = readSensors();
+    sendSensorData(sensorData);
+  } else if (command == "PING") {
+    Serial.println("PONG");
+  } else if (command == "RESET") {
+    stopCar();
+    sendAck("RESET");
+  }
 }
 
 void loop() {
   // Check for serial commands
-  if (Serial.available() > 0) {
+  while (Serial.available() > 0) {
     String command = Serial.readStringUntil('\n');
     processCommand(command);
   }
-  
-  // Read sensor data
-  SensorData sensorData = readSensors();
-  
-  // Send sensor data back to main controller
-  sendSensorData(sensorData);
-  
-  // Small delay to prevent overwhelming the serial buffer
-  delay(50);
-}
 
-void processCommand(String command) {
-  // Parse and execute commands from main controller
-  if (command.startsWith("MOVE:")) {
-    // Format: MOVE:direction:speed
-    int colonIndex = command.indexOf(':');
-    String direction = command.substring(5, colonIndex);
-    int speed = command.substring(colonIndex + 1).toInt();
-    
-    moveCar(direction, speed);
+  // Periodic telemetry streaming
+  unsigned long now = millis();
+  if (now - lastTelemetryTime >= TELEMETRY_INTERVAL_MS) {
+    lastTelemetryTime = now;
+    SensorData sensorData = readSensors();
+    sendSensorData(sensorData);
   }
-  else if (command == "STOP") {
-    stopCar();
-  }
-} 
+
+  delay(10);
+}
